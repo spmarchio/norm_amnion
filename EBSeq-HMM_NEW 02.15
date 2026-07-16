@@ -1,0 +1,112 @@
+EBSeq-HMM
+
+#load libraries
+library(ggplot2)
+library(ggvis)
+library(dplyr)
+library(stringr)
+library(tibble)
+library(locfit)
+library(scales)
+library(edgeR)
+library(plyr)
+library(viridis)
+library(sva)
+library(glmmSeq)
+library(openxlsx)
+library(PCAtools)
+library(Biobase)
+library(EBSeq)  
+library(EBSeqHMM)
+
+
+#load in raw count data
+raw_data = read.csv("genecounts_07OCT2024.csv",header=TRUE, check.names = TRUE)
+data = ddply(raw_data,"gene_id", numcolwise(sum))
+data.w.rownames <- data.matrix(data.frame(data[,-1], row.names=data[,1]))
+
+#load in metadata
+traitdata = read.csv("gestational_age_correct.csv")
+traitdata$Mare_ID
+traitdata$Gestational_Age_Months
+
+
+animalID <- factor(traitdata$Mare.ID)  # Convert Mare_ID to a factor
+gestational_age <- factor(traitdata$Gestational_age)  # Create a factor for gestational age
+str(animalID)
+str(gestational_age)
+
+
+#pre-processing low read counts
+keepexper <- filterByExpr(data.w.rownames, min.count = 0, min.total.count = 100, group = traitdata$Gestational_age)
+x <- data.w.rownames[keepexper,]
+dim(x)
+
+sum(data.w.rownames)
+sum(x)
+
+keep<-rowSums(cpm(x)>0.5) >= 12
+y<-x[keep,]
+dim(y)
+sum(y)
+
+levels(gestational_age)
+
+#TMM 
+y_dge <- DGEList(counts = y)
+y_dge <- calcNormFactors(y_dge, method = "TMM") #Calculate size factors using the TMM (Trimmed Mean of M-values) method for the EBSeq-HMM
+normed_counts <- cpm(y_dge, normalized.lib.sizes = TRUE)
+write.csv(normed_counts, "TMM_normed_counts02.15.csv")
+
+size_factors <- y_dge$samples$norm.factors #Extract the calculated size factors?
+
+
+#EBSeq-HMM 
+
+gest_age_out<-EBSeqHMMTest(Data = y, sizeFactors = size_factors, Conditions = gestational_age, UpdateRd = 150,
+                           UpdatePI = FALSE, FCV = 1.5) ##Should I have used raw counts (data.w.rownames) instead of filtered (y)???
+
+GeneDECalls <- GetDECalls(gest_age_out, FDR=.01)
+head(GeneDECalls)
+GeneDECalls
+GeneDECalls["CD74",]
+
+gest_age_out$LLSum #-3463434
+
+
+QQP(gest_age_out,GeneLevel=TRUE)
+DenNHist(gest_age_out, GeneLevel=TRUE)
+
+PlotExp(normed_counts, gestational_age, Name="CD74")
+
+GeneConfCalls <- GetConfidentCalls(gest_age_out, FDR=.01,cutoff=.5, OnlyDynamic=TRUE)
+head(GeneConfCalls$Overall)
+str(GeneConfCalls$EachPathNames)
+
+GeneConfCalls$EachPathNames$`Up-Up-Up`
+write.csv(GeneConfCalls$EachPathNames$`Up-Up-Up`, "AN_Up-Up-Up.csv")
+
+GeneConfCalls$EachPathNames$`Down-Up-Up`
+write.csv(GeneConfCalls$EachPathNames$`Down-Up-Up`, "AN_Down-Up-Up.csv")
+
+GeneConfCalls$EachPathNames$`Up-Down-Up`
+write.csv(GeneConfCalls$EachPathNames$`Up-Down-Up`, "AN_Up-Down-Up.csv")
+
+GeneConfCalls$EachPathNames$`Down-Down-Up`
+write.csv(GeneConfCalls$EachPathNames$`Down-Down-Up`, "AN_Down-Down-Up.csv")
+
+GeneConfCalls$EachPathNames$`Up-Up-Down`
+write.csv(GeneConfCalls$EachPathNames$`Up-Up-Down`, "AN_Up-Up-Down.csv")
+
+GeneConfCalls$EachPathNames$`Down-Up-Down`
+write.csv(GeneConfCalls$EachPathNames$`Down-Up-Down`, "AN_Down-Up-Down.csv")
+
+GeneConfCalls$EachPathNames$`Up-Down-Down`
+write.csv(GeneConfCalls$EachPathNames$`Up-Down-Down`, "AN_Up-Down-Down.csv")
+
+GeneConfCalls$EachPathNames$`Down-Down-Down`
+write.csv(GeneConfCalls$EachPathNames$`Down-Down-Down`, "AN_Down-Down-Down.csv")
+
+write.csv(GeneConfCalls$Overall, "AN_all.csv")
+
+PlotExp(normed_counts, gestational_age, Name="INSIG2")
