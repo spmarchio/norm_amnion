@@ -1,0 +1,163 @@
+library(ggplot2)
+library(ggvis)
+library(plyr)
+library(dplyr)
+library(stringr)
+library(tibble)
+library(locfit)
+library(scales)
+library(edgeR)
+library(limma)
+library(DESeq2)
+library(viridis)
+library(sva)
+library(glmmSeq)
+library(openxlsx)
+library(PCAtools)
+library(Biobase)
+library(ggpubr)
+library(pheatmap)
+library(purrr)
+library(ggforce)
+
+sessionInfo()
+
+raw_data <- read.csv("genecounts_07OCT2024_ordered.csv", header = TRUE, check.names = TRUE)
+data.w.rownames <- data.matrix(data.frame(raw_data[, -1], row.names = raw_data[, 1]))
+
+traitdata <- read.csv("gestational_age_correct.csv")
+
+animalID <- traitdata$Mare.ID
+gest_age <- factor(traitdata$Gestational_age)
+
+keepexper <- filterByExpr(data.w.rownames, min.count = 0, min.total.count = 100, group = gest_age)
+x <- data.w.rownames[keepexper, ]
+dim(x)
+
+sum(data.w.rownames)
+sum(x)
+
+keep <- rowSums(cpm(x) > 0.5) >= 12
+y <- x[keep, ]
+dim(y)
+
+dgedata <- DGEList(counts = y, group = gest_age)
+dgedata$samples
+
+barplot(
+  dgedata$samples$lib.size,
+  names = colnames(dgedata),
+  las = 2,
+  cex.names = .55,
+  col = plasma(4)[gest_age]
+)
+title("Total Library Count per Sample")
+abline(h = median(dgedata$samples$lib.size), col = "black")
+
+dgedatanormal <- calcNormFactors(dgedata)
+dgedatanormal
+
+logcounts <- cpm(dgedata, log = TRUE)
+
+boxplot(
+  logcounts,
+  xlab = "",
+  ylab = "Log2 counts per million",
+  las = 2,
+  cex.axis = .55,
+  col = plasma(4)[gest_age]
+)
+
+abline(h = median(logcounts), col = "orange")
+title("Unnormalized Expression Distribution (logCPM)")
+
+x2 <- dgedatanormal
+lcpm <- cpm(x2, log = TRUE)
+write.csv(lcpm, "lcpm_all_readsGLM10022025.csv")
+
+colors <- c("darkblue", "magenta", "red", "darkgreen")
+plotMDS(dgedatanormal)
+plotMDS(
+  dgedatanormal,
+  col = colors[gest_age],
+  dim.plot = c(1, 2),
+  cex = 1,
+  top = 500,
+  gene.selection = "pairwise",
+  xlab = "Dimension 1",
+  ylab = "Dimension 2"
+)
+legend("bottomright", legend = levels(gest_age), fill = colors, ncol = 1, cex = 0.65)
+title("Multidimensional Scaling Plot of 18 Samples")
+
+stopifnot(ncol(y) == nrow(traitdata))
+
+if (!all(colnames(y) == traitdata$SampleID)) {
+  rownames(traitdata) <- traitdata$SampleID
+  traitdata <- traitdata[colnames(y), ]
+  stopifnot(all(colnames(y) == traitdata$SampleID))
+}
+
+dge <- DGEList(counts = y)
+gest_age <- factor(traitdata$Gestational_age, levels = c("4", "6", "9", "10"))
+dge$samples$group <- gest_age
+
+dge <- calcNormFactors(dge)
+
+design <- model.matrix(~0 + gest_age)
+colnames(design) <- paste0("m", levels(gest_age))
+
+dge <- estimateDisp(dge, design)
+fit <- glmQLFit(dge, design)
+
+C <- makeContrasts(
+  late_vs_early = ((m9 + m10) / 2) - ((m4 + m6) / 2),
+  levels = design
+)
+
+qlf <- glmQLFTest(fit, contrast = C[, "late_vs_early"])
+tt <- topTags(qlf, n = Inf)$table
+tt$direction <- ifelse(tt$logFC > 0, "up in late (9+10)", "up in early (4+6)")
+
+alpha <- 0.05
+lfc_cut <- 1
+
+tt$neglog10FDR <- -log10(tt$FDR)
+sig <- subset(tt, FDR < alpha & abs(logFC) >= lfc_cut)
+
+n_up <- sum(sig$logFC > 0)
+n_down <- sum(sig$logFC < 0)
+
+cat(
+  "late_vs_early  |  FDR<", alpha,
+  " & |log2FC|>=", lfc_cut,
+  " → Up in late:", n_up,
+  " | Up in early:", n_down,
+  "\n",
+  sep = ""
+)
+
+tt <- tt[order(tt$FDR, -abs(tt$logFC)), ]
+
+write.csv(tt, "late_vs_early_DEGs_all.csv", row.names = TRUE)
+
+plotQLDisp(fit)
+title("QL dispersion vs abundance")
+
+plotMD(
+  qlf,
+  status = ifelse(tt$FDR < alpha, "Significant", "NS"),
+  column = 1
+)
+abline(h = c(-lfc_cut, lfc_cut), lty = 2)
+title("MD plot: late_vs_early")
+
+ggplot(tt, aes(x = logFC, y = neglog10FDR)) +
+  geom_point(alpha = 0.5) +
+  geom_vline(xintercept = c(-lfc_cut, lfc_cut), linetype = 2) +
+  geom_hline(yintercept = -log10(alpha), linetype = 2) +
+  labs(
+    title = "Volcano: late_vs_early",
+    x = "log2FC (late vs early)",
+    y = "-log10(FDR)"
+  )
